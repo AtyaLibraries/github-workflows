@@ -1,0 +1,69 @@
+name: Sign NuGet package
+description: Sign NuGet packages with the supplied certificate or enforce the signed-package policy.
+
+inputs:
+  packages-path:
+    description: Directory containing NuGet packages.
+    required: true
+  cert-base64:
+    description: Base64-encoded NuGet signing certificate.
+    required: false
+    default: ''
+  cert-password:
+    description: Password for the NuGet signing certificate.
+    required: false
+    default: ''
+  require-signed:
+    description: Require signing credentials and signed packages.
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Sign packages
+      env:
+        CERT_BASE64: ${{ inputs.cert-base64 }}
+        CERT_PASSWORD: ${{ inputs.cert-password }}
+        PACKAGES_PATH: ${{ inputs.packages-path }}
+        REQUIRE_SIGNED_PACKAGES: ${{ inputs.require-signed }}
+      shell: pwsh
+      run: |
+        $packages = @(Get-ChildItem -Path $env:PACKAGES_PATH -Filter "*.nupkg")
+
+        if ($packages.Count -eq 0) {
+          throw "Expected at least one .nupkg to sign."
+        }
+
+        $hasSigningSecrets = -not [string]::IsNullOrWhiteSpace($env:CERT_BASE64) -and
+          -not [string]::IsNullOrWhiteSpace($env:CERT_PASSWORD)
+
+        if ($hasSigningSecrets) {
+          $certPath = Join-Path $env:RUNNER_TEMP "nuget-signing-cert.pfx"
+
+          try {
+            [System.IO.File]::WriteAllBytes($certPath, [System.Convert]::FromBase64String($env:CERT_BASE64))
+
+            foreach ($package in $packages) {
+              dotnet nuget sign "$($package.FullName)" `
+                --certificate-path "$certPath" `
+                --certificate-password "$env:CERT_PASSWORD" `
+                --timestamper http://timestamp.digicert.com `
+                --overwrite
+
+              if ($LASTEXITCODE -ne 0) {
+                exit $LASTEXITCODE
+              }
+            }
+          } finally {
+            if (Test-Path -LiteralPath $certPath) {
+              Remove-Item -LiteralPath $certPath -Force
+            }
+          }
+        } else {
+          if ($env:REQUIRE_SIGNED_PACKAGES -eq 'true') {
+            throw "Package signing is required, but cert-base64 and cert-password are not both set."
+          }
+
+          Write-Warning "Package signing was explicitly disabled; publishing unsigned packages."
+        }

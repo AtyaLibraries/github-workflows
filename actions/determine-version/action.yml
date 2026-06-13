@@ -1,0 +1,81 @@
+name: Determine package version
+description: Resolve a stable package version and whether its Git tag must be created.
+
+inputs:
+  requested-version:
+    description: Optional stable SemVer version, for example 1.2.0.
+    required: false
+    default: ''
+
+outputs:
+  version:
+    description: Resolved stable SemVer package version.
+    value: ${{ steps.version.outputs.version }}
+  create-tag:
+    description: Whether a new version tag must be created.
+    value: ${{ steps.version.outputs.create-tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Determine version
+      id: version
+      env:
+        REQUESTED_VERSION: ${{ inputs.requested-version }}
+      shell: pwsh
+      run: |
+        git fetch --tags --force
+
+        $requestedVersion = $env:REQUESTED_VERSION
+        $currentTag = git tag --points-at HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' | Select-Object -First 1
+
+        if (-not [string]::IsNullOrWhiteSpace($requestedVersion)) {
+          if ($requestedVersion -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Version must use stable SemVer format: MAJOR.MINOR.PATCH."
+          }
+
+          $version = $requestedVersion
+        } elseif (-not [string]::IsNullOrWhiteSpace($currentTag)) {
+          $version = $currentTag.TrimStart('v')
+        } else {
+          $latestTag = git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | Select-Object -First 1
+
+          if ([string]::IsNullOrWhiteSpace($latestTag)) {
+            $version = '1.0.0'
+          } else {
+            $match = [regex]::Match($latestTag, '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$')
+
+            if (-not $match.Success) {
+              throw "Invalid version tag '$latestTag'. Expected vMAJOR.MINOR.PATCH."
+            }
+
+            $major = [int]$match.Groups['major'].Value
+            $minor = [int]$match.Groups['minor'].Value
+            $patch = [int]$match.Groups['patch'].Value + 1
+            $version = "$major.$minor.$patch"
+          }
+        }
+
+        $tag = "v$version"
+        $existingTag = git tag --list $tag
+
+        if (-not [string]::IsNullOrWhiteSpace($existingTag)) {
+          $tagCommit = git rev-list -n 1 $tag
+          $headCommit = git rev-parse HEAD
+
+          if ($tagCommit -ne $headCommit) {
+            throw "Tag $tag already exists on another commit."
+          }
+
+          $createTag = 'false'
+        } else {
+          $createTag = 'true'
+        }
+
+        Add-Content -Path $env:GITHUB_ENV -Value "PACKAGE_VERSION=$version"
+        Add-Content -Path $env:GITHUB_ENV -Value "MINVERVERSIONOVERRIDE=$version"
+        Add-Content -Path $env:GITHUB_ENV -Value "CREATE_VERSION_TAG=$createTag"
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "create-tag=$createTag"
+
+        Write-Host "Package version: $version"

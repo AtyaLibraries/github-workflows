@@ -1,0 +1,31 @@
+name: Validate NuGet package
+description: Assert that one stable package and one symbol package match the requested version.
+
+inputs:
+  version:
+    description: Stable SemVer package version.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Verify stable package version
+      env:
+        PACKAGE_VERSION: ${{ inputs.version }}
+      shell: pwsh
+      run: |
+        if ($env:PACKAGE_VERSION -notmatch '^\d+\.\d+\.\d+$') {
+          throw "Package version must be stable SemVer: $env:PACKAGE_VERSION"
+        }
+
+        $packageVersion = [regex]::Escape($env:PACKAGE_VERSION)
+        $nupkg = @(Get-ChildItem -Path ./artifacts/packages -Filter "*.nupkg" | Where-Object { $_.Name -match "\.$packageVersion\.nupkg$" })
+        $snupkg = @(Get-ChildItem -Path ./artifacts/packages -Filter "*.snupkg" | Where-Object { $_.Name -match "\.$packageVersion\.snupkg$" })
+
+        if ($nupkg.Count -ne 1) {
+          throw "Expected exactly one stable .nupkg for version $env:PACKAGE_VERSION, found $($nupkg.Count)."
+        }
+
+        if ($snupkg.Count -ne 1) {
+          throw "Expected exactly one stable .snupkg for version $env:PACKAGE_VERSION, found $($snupkg.Count)."
+        }
