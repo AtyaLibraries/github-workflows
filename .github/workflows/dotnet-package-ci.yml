@@ -128,8 +128,15 @@ jobs:
           COVERAGE_MIN: ${{ inputs.coverage-min }}
         shell: pwsh
         run: |
-          [xml]$coverage = Get-Content -Path artifacts/coverage-report/Cobertura.xml
-          $linesValid = [int]$coverage.coverage.GetAttribute('lines-valid')
+          [xml]$coverage = Get-Content -Raw -Path artifacts/coverage-report/Cobertura.xml
+          $coverageElement = $coverage.DocumentElement
+
+          if ($null -eq $coverageElement -or $coverageElement.LocalName -ne 'coverage') {
+            throw "Invalid Cobertura report: expected a coverage root element."
+          }
+
+          $invariantCulture = [Globalization.CultureInfo]::InvariantCulture
+          $linesValid = [int]::Parse($coverageElement.GetAttribute('lines-valid'), $invariantCulture)
 
           if ($linesValid -eq 0) {
             if ($env:ALLOW_EMPTY_COVERAGE -eq 'true') {
@@ -140,9 +147,9 @@ jobs:
             throw "Coverage not measurable: the report contains no valid lines."
           }
 
-          $lineRate = [double]$coverage.coverage.GetAttribute('line-rate')
+          $lineRate = [double]::Parse($coverageElement.GetAttribute('line-rate'), $invariantCulture)
           $lineCoverage = [math]::Round($lineRate * 100, 2)
-          $coverageMinimum = [double]$env:COVERAGE_MIN
+          $coverageMinimum = [double]::Parse($env:COVERAGE_MIN, $invariantCulture)
 
           if ($lineCoverage -lt $coverageMinimum) {
             throw "Line coverage is $lineCoverage%; required minimum is $coverageMinimum%."
