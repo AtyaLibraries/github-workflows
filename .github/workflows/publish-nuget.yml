@@ -24,7 +24,7 @@ on:
         description: Require package-signing secrets and signed packages.
         required: false
         type: boolean
-        default: true
+        default: false
     secrets:
       NUGET_SIGN_CERT_BASE64:
         description: Base64-encoded NuGet signing certificate.

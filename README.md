@@ -54,10 +54,9 @@ jobs:
     secrets: inherit
 ```
 
-The publish workflow requires `NUGET_API_KEY`. Package signing is required by default
-and consumes `NUGET_SIGN_CERT_BASE64` and `NUGET_SIGN_CERT_PASSWORD`. Set
-`require-signed: false` only for repositories explicitly permitted to publish unsigned
-packages.
+The publish workflow uses NuGet trusted publishing through `NuGet/login` and does
+not require a stored `NUGET_API_KEY` secret. Packages are published unsigned by
+default (`require-signed: false`) and rely on NuGet.org repository signing.
 
 ## CodeQL
 
