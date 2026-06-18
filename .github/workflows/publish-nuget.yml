@@ -26,9 +26,6 @@ on:
         type: boolean
         default: true
     secrets:
-      NUGET_API_KEY:
-        description: NuGet.org API key.
-        required: true
       NUGET_SIGN_CERT_BASE64:
         description: Base64-encoded NuGet signing certificate.
         required: false
@@ -38,6 +35,10 @@ on:
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    shell: pwsh
 
 env:
   DOTNET_NOLOGO: true
@@ -73,6 +74,7 @@ jobs:
   publish:
     needs: should-publish
     if: needs.should-publish.outputs.enabled == 'true'
+    environment: production
     permissions:
       attestations: write
       contents: write
@@ -137,35 +139,10 @@ jobs:
           "-p:MinVerVersionOverride=$env:PACKAGE_VERSION"
           -p:EnablePackageValidation=true
 
-      - name: Generate package SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          path: artifacts/packages
-          format: cyclonedx-json
-          output-file: artifacts/packages/sbom.cdx.json
-
       - name: Validate packages
         uses: AtyaLibraries/github-workflows/actions/validate-nuget-package@v1
         with:
           version: ${{ steps.version.outputs.version }}
-
-      - name: Upload packages
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: publish-packages-${{ steps.version.outputs.version }}
-          path: |
-            ./artifacts/packages/*.nupkg
-            ./artifacts/packages/*.snupkg
-            ./artifacts/packages/sbom.cdx.json
-          if-no-files-found: error
-
-      - name: Attest package provenance
-        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
-        with:
-          subject-path: |
-            artifacts/packages/*.nupkg
-            artifacts/packages/*.snupkg
 
       - name: Sign packages
         uses: AtyaLibraries/github-workflows/actions/sign-nuget-package@v1
@@ -175,15 +152,61 @@ jobs:
           cert-password: ${{ secrets.NUGET_SIGN_CERT_PASSWORD }}
           require-signed: ${{ inputs.require-signed }}
 
-      - name: Publish to nuget.org
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+      - name: Locate package artifacts
+        id: package-artifacts
         shell: pwsh
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:NUGET_API_KEY)) {
-            throw "The NUGET_API_KEY repository secret is required."
+          $packages = @(Get-ChildItem -Path ./artifacts/packages -Filter "*.nupkg")
+          $symbolPackages = @(Get-ChildItem -Path ./artifacts/packages -Filter "*.snupkg")
+
+          if ($packages.Count -ne 1) {
+            throw "Expected exactly one .nupkg package, found $($packages.Count)."
           }
 
+          if ($symbolPackages.Count -ne 1) {
+            throw "Expected exactly one .snupkg package, found $($symbolPackages.Count)."
+          }
+
+          $packagePath = (Resolve-Path -Relative -Path $packages[0].FullName).Replace('\', '/')
+          $symbolPackagePath = (Resolve-Path -Relative -Path $symbolPackages[0].FullName).Replace('\', '/')
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "nupkg=$packagePath"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "snupkg=$symbolPackagePath"
+
+      - name: Generate package SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          file: ${{ steps.package-artifacts.outputs.nupkg }}
+          format: cyclonedx-json
+          output-file: artifacts/packages/package.sbom.cdx.json
+
+      - name: Upload packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: publish-packages-${{ steps.version.outputs.version }}
+          path: |
+            ./artifacts/packages/*.nupkg
+            ./artifacts/packages/*.snupkg
+            ./artifacts/packages/package.sbom.cdx.json
+          if-no-files-found: error
+
+      - name: Attest package provenance
+        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: ${{ steps.package-artifacts.outputs.nupkg }}
+
+      - name: Login to NuGet
+        id: nuget-login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: ArsenAsulyan
+
+      - name: Publish to nuget.org
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        shell: pwsh
+        run: |
           $packages = @(Get-ChildItem -Path ./artifacts/packages -Filter "*.nupkg")
           $symbolPackages = @(Get-ChildItem -Path ./artifacts/packages -Filter "*.snupkg")
 
@@ -236,4 +259,4 @@ jobs:
           files: |
             artifacts/packages/*.nupkg
             artifacts/packages/*.snupkg
-            artifacts/packages/sbom.cdx.json
+            artifacts/packages/package.sbom.cdx.json
