@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       version:
-        description: Optional stable SemVer version, for example 1.2.0.
+        description: Optional SemVer version, for example 1.2.0 or 1.2.0-oidc.1.
         required: false
         type: string
         default: ''
@@ -90,9 +90,67 @@ jobs:
 
       - name: Determine version
         id: version
-        uses: AtyaLibraries/github-workflows/actions/determine-version@v1
-        with:
-          requested-version: ${{ inputs.version }}
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          git fetch --tags --force
+
+          $requestedVersion = $env:REQUESTED_VERSION
+          $semVerPattern = '^\d+\.\d+\.\d+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$'
+          $currentTag = git tag --points-at HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' | Select-Object -First 1
+
+          if (-not [string]::IsNullOrWhiteSpace($requestedVersion)) {
+            if ($requestedVersion -notmatch $semVerPattern) {
+              throw "Version must use SemVer format: MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-prerelease."
+            }
+
+            $version = $requestedVersion
+          } elseif (-not [string]::IsNullOrWhiteSpace($currentTag)) {
+            $version = $currentTag.TrimStart('v')
+          } else {
+            $latestTag = git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | Select-Object -First 1
+
+            if ([string]::IsNullOrWhiteSpace($latestTag)) {
+              $version = '1.0.0'
+            } else {
+              $match = [regex]::Match($latestTag, '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$')
+
+              if (-not $match.Success) {
+                throw "Invalid version tag '$latestTag'. Expected vMAJOR.MINOR.PATCH."
+              }
+
+              $major = [int]$match.Groups['major'].Value
+              $minor = [int]$match.Groups['minor'].Value
+              $patch = [int]$match.Groups['patch'].Value + 1
+              $version = "$major.$minor.$patch"
+            }
+          }
+
+          $tag = "v$version"
+          $existingTag = git tag --list $tag
+
+          if (-not [string]::IsNullOrWhiteSpace($existingTag)) {
+            $tagCommit = git rev-list -n 1 $tag
+            $headCommit = git rev-parse HEAD
+
+            if ($tagCommit -ne $headCommit) {
+              throw "Tag $tag already exists on another commit."
+            }
+
+            $createTag = 'false'
+          } else {
+            $createTag = 'true'
+          }
+
+          $isPrerelease = $version.Contains('-').ToString().ToLowerInvariant()
+
+          Add-Content -Path $env:GITHUB_ENV -Value "PACKAGE_VERSION=$version"
+          Add-Content -Path $env:GITHUB_ENV -Value "MINVERVERSIONOVERRIDE=$version"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "create-tag=$createTag"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "prerelease=$isPrerelease"
+
+          Write-Host "Package version: $version"
 
       - name: Setup .NET
         uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
@@ -140,9 +198,26 @@ jobs:
           -p:EnablePackageValidation=true
 
       - name: Validate packages
-        uses: AtyaLibraries/github-workflows/actions/validate-nuget-package@v1
-        with:
-          version: ${{ steps.version.outputs.version }}
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $semVerPattern = '^\d+\.\d+\.\d+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$'
+
+          if ($env:PACKAGE_VERSION -notmatch $semVerPattern) {
+            throw "Package version must be SemVer: $env:PACKAGE_VERSION"
+          }
+
+          $packageVersion = [regex]::Escape($env:PACKAGE_VERSION)
+          $nupkg = @(Get-ChildItem -Path ./artifacts/packages -Filter "*.nupkg" | Where-Object { $_.Name -match "\.$packageVersion\.nupkg$" })
+          $snupkg = @(Get-ChildItem -Path ./artifacts/packages -Filter "*.snupkg" | Where-Object { $_.Name -match "\.$packageVersion\.snupkg$" })
+
+          if ($nupkg.Count -ne 1) {
+            throw "Expected exactly one .nupkg for version $env:PACKAGE_VERSION, found $($nupkg.Count)."
+          }
+
+          if ($snupkg.Count -ne 1) {
+            throw "Expected exactly one .snupkg for version $env:PACKAGE_VERSION, found $($snupkg.Count)."
+          }
 
       - name: Sign packages
         uses: AtyaLibraries/github-workflows/actions/sign-nuget-package@v1
@@ -255,6 +330,7 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
           generate_release_notes: true
+          prerelease: ${{ steps.version.outputs.prerelease }}
           fail_on_unmatched_files: true
           files: |
             artifacts/packages/*.nupkg
