@@ -100,12 +100,17 @@ runs:
           throw "Expected exactly one .nupkg package, found $($packages.Count)."
         }
 
-        if ($symbolPackages.Count -ne 1) {
-          throw "Expected exactly one .snupkg package, found $($symbolPackages.Count)."
+        if ($symbolPackages.Count -gt 1) {
+          throw "Expected at most one .snupkg package, found $($symbolPackages.Count)."
         }
 
         $packagePath = (Resolve-Path -Relative -Path $packages[0].FullName).Replace('\', '/')
-        $symbolPackagePath = (Resolve-Path -Relative -Path $symbolPackages[0].FullName).Replace('\', '/')
+        $symbolPackagePath = ''
+
+        if ($symbolPackages.Count -eq 1) {
+          $symbolPackagePath = (Resolve-Path -Relative -Path $symbolPackages[0].FullName).Replace('\', '/')
+        }
+
         $sbomPath = 'artifacts/packages/package.sbom.cdx.json'
 
         Add-Content -Path $env:GITHUB_OUTPUT -Value "nupkg=$packagePath"
