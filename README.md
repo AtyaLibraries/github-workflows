@@ -34,31 +34,6 @@ jobs:
 Optional inputs are `coverage-min` (default `80`), `runners` (a JSON array), and
 `allow-empty-coverage` (default `false`).
 
-## Publish NuGet
-
-```yaml
-# .github/workflows/publish.yml in a library repository
-name: Publish
-
-on:
-  push: { branches: [master] }
-  workflow_dispatch:
-
-jobs:
-  publish:
-    uses: AtyaLibraries/github-workflows/.github/workflows/publish-nuget.yml@v1
-    with:
-      solution: ./Caching.sln
-      test-project: ./tests/Caching.UnitTests/Caching.UnitTests.csproj
-      package-project: ./src/Caching/Caching.csproj
-    secrets: inherit
-```
-
-The publish workflow requires `NUGET_API_KEY`. Package signing is required by default
-and consumes `NUGET_SIGN_CERT_BASE64` and `NUGET_SIGN_CERT_PASSWORD`. Set
-`require-signed: false` only for repositories explicitly permitted to publish unsigned
-packages.
-
 ## CodeQL
 
 ```yaml
