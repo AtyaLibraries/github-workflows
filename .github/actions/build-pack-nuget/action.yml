@@ -1,0 +1,125 @@
+name: Build and pack NuGet package
+description: Restore, build, pack, validate, and generate a package-scoped SBOM for a NuGet package.
+
+inputs:
+  solution:
+    description: Path to the solution file.
+    required: true
+  package-project:
+    description: Path to the package project.
+    required: true
+
+outputs:
+  nupkg:
+    description: Relative path to the generated .nupkg package.
+    value: ${{ steps.package-artifacts.outputs.nupkg }}
+  snupkg:
+    description: Relative path to the generated .snupkg symbol package.
+    value: ${{ steps.package-artifacts.outputs.snupkg }}
+  sbom:
+    description: Relative path to the generated CycloneDX SBOM.
+    value: ${{ steps.package-artifacts.outputs.sbom }}
+
+runs:
+  using: composite
+  steps:
+    - name: Restore
+      env:
+        SOLUTION_FILE: ${{ inputs.solution }}
+      shell: pwsh
+      run: |
+        dotnet restore "$env:SOLUTION_FILE" `
+          --verbosity minimal `
+          --locked-mode `
+          -p:RestoreLockedMode=true `
+          -m:1
+
+    - name: Build
+      env:
+        SOLUTION_FILE: ${{ inputs.solution }}
+      shell: pwsh
+      run: |
+        $versionArgs = @()
+
+        if (-not [string]::IsNullOrWhiteSpace($env:PACKAGE_VERSION)) {
+          $versionArgs += "-p:Version=$env:PACKAGE_VERSION"
+          $versionArgs += "-p:PackageVersion=$env:PACKAGE_VERSION"
+          $versionArgs += "-p:MinVerVersionOverride=$env:PACKAGE_VERSION"
+        }
+
+        dotnet build "$env:SOLUTION_FILE" `
+          --configuration Release `
+          --no-restore `
+          --verbosity minimal `
+          -m:1 `
+          @versionArgs
+
+    - name: Pack
+      env:
+        PACKAGE_PROJECT: ${{ inputs.package-project }}
+      shell: pwsh
+      run: |
+        $outputPath = './artifacts/packages'
+
+        if (Test-Path -LiteralPath $outputPath) {
+          Remove-Item -LiteralPath $outputPath -Recurse -Force
+        }
+
+        New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
+
+        $versionArgs = @()
+
+        if (-not [string]::IsNullOrWhiteSpace($env:PACKAGE_VERSION)) {
+          $versionArgs += "-p:Version=$env:PACKAGE_VERSION"
+          $versionArgs += "-p:PackageVersion=$env:PACKAGE_VERSION"
+          $versionArgs += "-p:MinVerVersionOverride=$env:PACKAGE_VERSION"
+        }
+
+        dotnet pack "$env:PACKAGE_PROJECT" `
+          --configuration Release `
+          --no-build `
+          --output $outputPath `
+          --verbosity minimal `
+          -p:EnablePackageValidation=true `
+          @versionArgs
+
+    - name: Locate package artifacts
+      id: package-artifacts
+      shell: pwsh
+      run: |
+        $packages = @(Get-ChildItem -Path ./artifacts/packages -Filter "*.nupkg")
+        $symbolPackages = @(Get-ChildItem -Path ./artifacts/packages -Filter "*.snupkg")
+
+        if (-not [string]::IsNullOrWhiteSpace($env:PACKAGE_VERSION)) {
+          $packageVersion = [regex]::Escape($env:PACKAGE_VERSION)
+          $packages = @($packages | Where-Object { $_.Name -match "\.$packageVersion\.nupkg$" })
+          $symbolPackages = @($symbolPackages | Where-Object { $_.Name -match "\.$packageVersion\.snupkg$" })
+        }
+
+        if ($packages.Count -ne 1) {
+          throw "Expected exactly one .nupkg package, found $($packages.Count)."
+        }
+
+        if ($symbolPackages.Count -gt 1) {
+          throw "Expected at most one .snupkg package, found $($symbolPackages.Count)."
+        }
+
+        $packagePath = (Resolve-Path -Relative -Path $packages[0].FullName).Replace('\', '/')
+        $symbolPackagePath = ''
+
+        if ($symbolPackages.Count -eq 1) {
+          $symbolPackagePath = (Resolve-Path -Relative -Path $symbolPackages[0].FullName).Replace('\', '/')
+        }
+
+        $sbomPath = 'artifacts/packages/package.sbom.cdx.json'
+
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "nupkg=$packagePath"
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "snupkg=$symbolPackagePath"
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "sbom=$sbomPath"
+
+    - name: Generate package SBOM
+      uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      with:
+        file: ${{ steps.package-artifacts.outputs.nupkg }}
+        format: cyclonedx-json
+        output-file: ${{ steps.package-artifacts.outputs.sbom }}
