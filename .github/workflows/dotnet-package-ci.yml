@@ -16,10 +16,30 @@ on:
         required: true
         type: string
       coverage-min:
-        description: Minimum required line coverage percentage.
+        description: Legacy minimum line coverage percentage. Use coverage-line-min for new callers.
         required: false
         type: number
-        default: 80
+        default: 0
+      coverage-line-min:
+        description: Minimum required line coverage percentage when fail-on-coverage is true. Use 0 to skip the line gate.
+        required: false
+        type: number
+        default: 0
+      coverage-branch-min:
+        description: Minimum required branch coverage percentage when fail-on-coverage is true. Use 0 to skip the branch gate.
+        required: false
+        type: number
+        default: 0
+      fail-on-coverage:
+        description: Fail the build when enabled coverage thresholds are not met.
+        required: false
+        type: boolean
+        default: false
+      publish-coverage-report:
+        description: Generate and publish HTML, Markdown, Cobertura, and badge coverage reports.
+        required: false
+        type: boolean
+        default: true
       runners:
         description: JSON array of GitHub-hosted runners.
         required: false
@@ -74,12 +94,12 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0 # MinVer needs full git history
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
 
@@ -93,8 +113,30 @@ jobs:
       - name: Build
         run: dotnet build "${{ env.SOLUTION_FILE }}" --configuration Release --no-restore --verbosity minimal
 
+      - name: Write coverage settings
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          @'
+          <?xml version="1.0" encoding="utf-8"?>
+          <RunSettings>
+            <DataCollectionRunSettings>
+              <DataCollectors>
+                <DataCollector friendlyName="XPlat Code Coverage">
+                  <Configuration>
+                    <Format>cobertura</Format>
+                    <SkipAutoProps>true</SkipAutoProps>
+                    <ExcludeByAttribute>Obsolete,GeneratedCodeAttribute,CompilerGeneratedAttribute,ExcludeFromCodeCoverageAttribute</ExcludeByAttribute>
+                    <ExcludeByFile>**/*.g.cs,**/*.Designer.cs</ExcludeByFile>
+                  </Configuration>
+                </DataCollector>
+              </DataCollectors>
+            </DataCollectionRunSettings>
+          </RunSettings>
+          '@ | Set-Content -Path artifacts/coverage.runsettings -Encoding UTF8
+
       - name: Test
-        run: dotnet test "${{ env.TEST_PROJECT }}" --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --collect "XPlat Code Coverage" --results-directory artifacts/test-results --verbosity minimal
+        run: dotnet test "${{ env.TEST_PROJECT }}" --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --settings artifacts/coverage.runsettings --collect "XPlat Code Coverage" --results-directory artifacts/test-results --verbosity minimal
 
       - name: Upload test results
         if: always()
@@ -113,30 +155,85 @@ jobs:
           reporter: dotnet-trx
           fail-on-error: true
 
-      - name: Generate coverage report
+      - name: Detect coverage reports
+        id: coverage-files
         if: matrix.os == 'ubuntu-latest'
+        shell: pwsh
+        run: |
+          $reports = @(Get-ChildItem -Path artifacts/test-results -Recurse -Filter coverage.cobertura.xml -File -ErrorAction SilentlyContinue)
+
+          if ($reports.Count -eq 0) {
+            "found=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Warning "No Cobertura coverage reports were found."
+            exit 0
+          }
+
+          "found=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $reports | ForEach-Object { Write-Host "Found coverage report: $($_.FullName)" }
+
+      - name: Generate coverage report
+        if: matrix.os == 'ubuntu-latest' && steps.coverage-files.outputs.found == 'true' && (inputs.publish-coverage-report == true || inputs.fail-on-coverage == true)
         uses: danielpalme/ReportGenerator-GitHub-Action@049f7ec958c672fd31d5cc1cb01622dc8d2e23ab # 5.5.10
         with:
           reports: artifacts/test-results/**/coverage.cobertura.xml
           targetdir: artifacts/coverage-report
-          reporttypes: HtmlInline;MarkdownSummaryGithub;Cobertura
+          reporttypes: Html;MarkdownSummaryGithub;Cobertura;Badges
 
       - name: Enforce coverage threshold
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && inputs.fail-on-coverage == true
         env:
           ALLOW_EMPTY_COVERAGE: ${{ inputs.allow-empty-coverage }}
-          COVERAGE_MIN: ${{ inputs.coverage-min }}
+          COVERAGE_BRANCH_MIN: ${{ inputs.coverage-branch-min }}
+          COVERAGE_LEGACY_MIN: ${{ inputs.coverage-min }}
+          COVERAGE_LINE_MIN: ${{ inputs.coverage-line-min }}
         shell: pwsh
         run: |
-          [xml]$coverage = Get-Content -Raw -Path artifacts/coverage-report/Cobertura.xml
+          $reportPath = 'artifacts/coverage-report/Cobertura.xml'
+          if (-not (Test-Path -LiteralPath $reportPath)) {
+            throw "Coverage gate is enabled, but no merged Cobertura report was generated."
+          }
+
+          $invariantCulture = [Globalization.CultureInfo]::InvariantCulture
+
+          function Read-DoubleInput([string]$value, [string]$name) {
+            if ([string]::IsNullOrWhiteSpace($value)) {
+              return 0.0
+            }
+
+            $result = [double]::Parse($value, $invariantCulture)
+            if ($result -lt 0 -or $result -gt 100) {
+              throw "$name must be between 0 and 100."
+            }
+
+            return $result
+          }
+
+          function Read-RequiredDoubleAttribute([xml]$coverageDocument, [string]$name) {
+            $value = $coverageDocument.DocumentElement.GetAttribute($name)
+            if ([string]::IsNullOrWhiteSpace($value)) {
+              throw "Invalid Cobertura report: missing '$name'."
+            }
+
+            return [double]::Parse($value, $invariantCulture)
+          }
+
+          function Read-RequiredIntAttribute([xml]$coverageDocument, [string]$name) {
+            $value = $coverageDocument.DocumentElement.GetAttribute($name)
+            if ([string]::IsNullOrWhiteSpace($value)) {
+              throw "Invalid Cobertura report: missing '$name'."
+            }
+
+            return [int]::Parse($value, $invariantCulture)
+          }
+
+          [xml]$coverage = Get-Content -Raw -LiteralPath $reportPath
           $coverageElement = $coverage.DocumentElement
 
           if ($null -eq $coverageElement -or $coverageElement.LocalName -ne 'coverage') {
             throw "Invalid Cobertura report: expected a coverage root element."
           }
 
-          $invariantCulture = [Globalization.CultureInfo]::InvariantCulture
-          $linesValid = [int]::Parse($coverageElement.GetAttribute('lines-valid'), $invariantCulture)
+          $linesValid = Read-RequiredIntAttribute $coverage 'lines-valid'
 
           if ($linesValid -eq 0) {
             if ($env:ALLOW_EMPTY_COVERAGE -eq 'true') {
@@ -147,23 +244,51 @@ jobs:
             throw "Coverage not measurable: the report contains no valid lines."
           }
 
-          $lineRate = [double]::Parse($coverageElement.GetAttribute('line-rate'), $invariantCulture)
-          $lineCoverage = [math]::Round($lineRate * 100, 2)
-          $coverageMinimum = [double]::Parse($env:COVERAGE_MIN, $invariantCulture)
+          $lineMinimum = Read-DoubleInput $env:COVERAGE_LINE_MIN 'coverage-line-min'
+          $legacyMinimum = Read-DoubleInput $env:COVERAGE_LEGACY_MIN 'coverage-min'
+          $branchMinimum = Read-DoubleInput $env:COVERAGE_BRANCH_MIN 'coverage-branch-min'
 
-          if ($lineCoverage -lt $coverageMinimum) {
-            throw "Line coverage is $lineCoverage%; required minimum is $coverageMinimum%."
+          if ($lineMinimum -eq 0 -and $legacyMinimum -gt 0) {
+            $lineMinimum = $legacyMinimum
           }
 
-          Write-Host "Line coverage is $lineCoverage%; required minimum is $coverageMinimum%."
+          $lineRate = Read-RequiredDoubleAttribute $coverage 'line-rate'
+          $branchRate = Read-RequiredDoubleAttribute $coverage 'branch-rate'
+          $lineCoverage = [math]::Round($lineRate * 100, 2)
+          $branchCoverage = [math]::Round($branchRate * 100, 2)
+
+          if ($lineMinimum -gt 0 -and $lineCoverage -lt $lineMinimum) {
+            throw "Line coverage is $lineCoverage%; required minimum is $lineMinimum%."
+          }
+
+          if ($branchMinimum -gt 0 -and $branchCoverage -lt $branchMinimum) {
+            throw "Branch coverage is $branchCoverage%; required minimum is $branchMinimum%."
+          }
+
+          if ($lineMinimum -gt 0) {
+            Write-Host "Line coverage is $lineCoverage%; required minimum is $lineMinimum%."
+          } else {
+            Write-Host "Line coverage is $lineCoverage%; no minimum configured."
+          }
+
+          if ($branchMinimum -gt 0) {
+            Write-Host "Branch coverage is $branchCoverage%; required minimum is $branchMinimum%."
+          } else {
+            Write-Host "Branch coverage is $branchCoverage%; no minimum configured."
+          }
 
       - name: Publish coverage summary
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && inputs.publish-coverage-report == true && steps.coverage-files.outputs.found == 'true'
         shell: bash
-        run: cat artifacts/coverage-report/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          if [[ -f artifacts/coverage-report/SummaryGithub.md ]]; then
+            cat artifacts/coverage-report/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No coverage summary was generated." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload coverage report
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && inputs.publish-coverage-report == true && steps.coverage-files.outputs.found == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-report

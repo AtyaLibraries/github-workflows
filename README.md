@@ -31,8 +31,11 @@ jobs:
       package-project: ./src/Caching/Caching.csproj
 ```
 
-Optional inputs are `coverage-min` (default `80`), `runners` (a JSON array), and
-`allow-empty-coverage` (default `false`).
+Optional inputs are `runners` (a JSON array), `allow-empty-coverage` (default `false`),
+`publish-coverage-report` (default `true`), `fail-on-coverage` (default `false`),
+`coverage-line-min` (default `0`), and `coverage-branch-min` (default `0`).
+The legacy `coverage-min` input is still accepted as a line threshold when
+`fail-on-coverage` is enabled and `coverage-line-min` is left at `0`.
 
 ## CodeQL
 
