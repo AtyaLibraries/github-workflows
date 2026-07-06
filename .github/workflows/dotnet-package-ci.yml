@@ -15,6 +15,11 @@ on:
         description: Path to the package project.
         required: true
         type: string
+      pack-style:
+        description: Pack behavior. Use package for built libraries and template for template packages.
+        required: false
+        type: string
+        default: package
       coverage-min:
         description: Legacy minimum line coverage percentage. Use coverage-line-min for new callers.
         required: false
@@ -62,6 +67,7 @@ env:
   SOLUTION_FILE: ${{ inputs.solution }}
   TEST_PROJECT: ${{ inputs.test-project }}
   PACKAGE_PROJECT: ${{ inputs.package-project }}
+  PACK_STYLE: ${{ inputs.pack-style }}
 
 jobs:
   release-source:
@@ -300,12 +306,20 @@ jobs:
         shell: pwsh
         run: |
           $packageProject = $env:PACKAGE_PROJECT
-          if (Test-Path ./Atya.Templates.NuGetPackage.csproj) {
-            $packageProject = "./Atya.Templates.NuGetPackage.csproj"
-            dotnet restore "$packageProject" --verbosity minimal --locked-mode -p:RestoreLockedMode=true
-            dotnet pack "$packageProject" --configuration Release --no-restore --output artifacts/packages --verbosity minimal -p:EnablePackageValidation=true
-          } else {
-            dotnet pack "$packageProject" --configuration Release --no-build --output artifacts/packages --verbosity minimal -p:EnablePackageValidation=true
+
+          switch ($env:PACK_STYLE) {
+            'package' {
+              dotnet pack "$packageProject" --configuration Release --no-build --output artifacts/packages --verbosity minimal -p:EnablePackageValidation=true
+              break
+            }
+            'template' {
+              dotnet restore "$packageProject" --verbosity minimal --locked-mode -p:RestoreLockedMode=true
+              dotnet pack "$packageProject" --configuration Release --no-restore --output artifacts/packages --verbosity minimal -p:EnablePackageValidation=true
+              break
+            }
+            default {
+              throw "Unsupported pack-style '$env:PACK_STYLE'. Use 'package' or 'template'."
+            }
           }
 
       - name: Upload packages
