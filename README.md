@@ -31,33 +31,11 @@ jobs:
       package-project: ./src/Caching/Caching.csproj
 ```
 
-Optional inputs are `coverage-min` (default `80`), `runners` (a JSON array), and
-`allow-empty-coverage` (default `false`).
-
-## Publish NuGet
-
-```yaml
-# .github/workflows/publish.yml in a library repository
-name: Publish
-
-on:
-  push: { branches: [master] }
-  workflow_dispatch:
-
-jobs:
-  publish:
-    uses: AtyaLibraries/github-workflows/.github/workflows/publish-nuget.yml@v1
-    with:
-      solution: ./Caching.sln
-      test-project: ./tests/Caching.UnitTests/Caching.UnitTests.csproj
-      package-project: ./src/Caching/Caching.csproj
-    secrets: inherit
-```
-
-The publish workflow requires `NUGET_API_KEY`. Package signing is required by default
-and consumes `NUGET_SIGN_CERT_BASE64` and `NUGET_SIGN_CERT_PASSWORD`. Set
-`require-signed: false` only for repositories explicitly permitted to publish unsigned
-packages.
+Optional inputs are `runners` (a JSON array), `allow-empty-coverage` (default `false`),
+`publish-coverage-report` (default `true`), `fail-on-coverage` (default `false`),
+`coverage-line-min` (default `0`), and `coverage-branch-min` (default `0`).
+The legacy `coverage-min` input is still accepted as a line threshold when
+`fail-on-coverage` is enabled and `coverage-line-min` is left at `0`.
 
 ## CodeQL
 
