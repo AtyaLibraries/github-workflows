@@ -179,7 +179,7 @@ jobs:
 
       - name: Generate coverage report
         if: matrix.os == 'ubuntu-latest' && steps.coverage-files.outputs.found == 'true' && (inputs.publish-coverage-report == true || inputs.fail-on-coverage == true)
-        uses: danielpalme/ReportGenerator-GitHub-Action@049f7ec958c672fd31d5cc1cb01622dc8d2e23ab # 5.5.10
+        uses: danielpalme/ReportGenerator-GitHub-Action@70c37c4d588cff5bf9cf190830c6f01dfcfb884b # v5.6.1
         with:
           reports: artifacts/test-results/**/coverage.cobertura.xml
           targetdir: artifacts/coverage-report
